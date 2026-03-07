@@ -185,18 +185,24 @@ SERVICES = {
 }
 
 WELCOME_MSG = (
-    "🙏 *नमस्कार {name}!*\n\n"
-    "आपले *अक्षय मल्टी सर्व्हिसेस* मध्ये मनःपूर्वक स्वागत आहे.\n\n"
-    "📌 *टीप:* ही सुविधा केवळ *पारनेर तालुक्यातील नागरिकांसाठी* उपलब्ध आहे.\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "🏢 *अक्षय मल्टी सर्व्हिसेस*\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "🙏 नमस्कार *{name}*,\n"
+    "आपले स्वागत आहे!\n\n"
+    "📍 ही सेवा केवळ *पारनेर तालुक्यातील*\n"
+    "नागरिकांसाठी उपलब्ध आहे.\n\n"
 )
 
 MENU_TEXT = (
-    "कृपया आपल्या गरजेनुसार सेवा निवडा (क्रमांक टाइप करा):\n\n"
-    "1️⃣  डोमासाईल  –  ₹200\n"
-    "2️⃣  Nationality Certificate  –  ₹200\n"
-    "3️⃣  उत्पन्न दाखला  –  ₹200\n"
-    "4️⃣  नॉन क्रीमीलेअर दाखला  –  ₹300\n"
-    "5️⃣  मराठा जातीचा दाखला  –  ₹500\n\n"
+    "📋 *सेवा यादी* — क्रमांक टाइप करा:\n"
+    "─────────────────────\n"
+    "1️⃣  डोमासाईल          ₹200\n"
+    "2️⃣  Nationality Cert.  ₹200\n"
+    "3️⃣  उत्पन्न दाखला      ₹200\n"
+    "4️⃣  नॉन क्रीमीलेअर    ₹300\n"
+    "5️⃣  मराठा जातीचा      ₹500\n"
+    "─────────────────────\n"
     "0️⃣  बाहेर पडा / Exit"
 )
 
@@ -459,80 +465,36 @@ def send_daily_sheet_link():
 
 
 # ─────────────────────────────────────────────
-# PhonePe Payment
+# UPI Payment
 # ─────────────────────────────────────────────
-def _phonepe_x_verify_pay(base64_payload: str) -> str:
-    raw = base64_payload + "/pg/v1/pay" + PHONEPE_SALT_KEY
-    return hashlib.sha256(raw.encode()).hexdigest() + "###" + PHONEPE_SALT_INDEX
-
-
-def _phonepe_x_verify_webhook(encoded: str) -> str:
-    raw = encoded + PHONEPE_SALT_KEY
-    return hashlib.sha256(raw.encode()).hexdigest() + "###" + PHONEPE_SALT_INDEX
-
+UPI_ID   = "sarthakmandage7474@ibl"
+UPI_NAME = "Akshay Multi Services"
 
 def create_phonepe_payment_link(user: str, service_key: str) -> tuple[str | None, str]:
-    """Returns (merchant_transaction_id, message_text)."""
-    if not all([PHONEPE_MERCHANT_ID, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX]):
-        return None, "⚠️ पेमेंट सेवा सध्या अनुपलब्ध आहे. कृपया नंतर प्रयत्न करा."
+    """Returns (txn_id, message_text) using UPI deep link."""
+    service  = SERVICES[service_key]
+    amount   = paise_to_rupees(service["amount_paise"])
+    txn_id   = str(uuid.uuid4()).replace("-", "")[:35]
+    note     = service["name"].replace(" ", "%20")
 
-    service    = SERVICES[service_key]
-    amount     = service["amount_paise"]
-    txn_id     = str(uuid.uuid4()).replace("-", "")[:35]  # PhonePe max 35 chars
-    mobile_no  = user.split(":")[-1].lstrip("+")
-    cb_url     = f"{PHONEPE_CALLBACK_BASE.rstrip('/')}/phonepe_webhook"
+    upi_link = (
+        f"upi://pay?pa={UPI_ID}"
+        f"&pn={UPI_NAME.replace(' ', '%20')}"
+        f"&am={amount}"
+        f"&cu=INR"
+        f"&tn={note}"
+    )
 
-    payload = {
-        "merchantId":            PHONEPE_MERCHANT_ID,
-        "merchantTransactionId": txn_id,
-        "merchantUserId":        mobile_no,
-        "amount":                amount,
-        "redirectUrl":           f"{PHONEPE_CALLBACK_BASE.rstrip('/')}/payment-status",
-        "redirectMode":          "POST",
-        "callbackUrl":           cb_url,
-        "mobileNumber":          mobile_no,
-        "paymentInstrument":     {"type": "PAY_PAGE"},
-    }
-
-    b64 = base64.b64encode(json.dumps(payload).encode()).decode()
-    x_verify = _phonepe_x_verify_pay(b64)
-    headers  = {
-        "Content-Type": "application/json",
-        "X-VERIFY":     x_verify,
-        "accept":       "application/json",
-    }
-
-    try:
-        resp = requests.post(
-            f"{PHONEPE_BASE_URL}/pg/v1/pay",
-            headers=headers,
-            json={"request": b64},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        if data.get("success"):
-            pay_url = data["data"]["instrumentResponse"]["redirectInfo"]["url"]
-            # Store txn → user mapping for webhook lookup
-            if redis_client:
-                redis_client.setex(f"txn:{txn_id}", SESSION_TIMEOUT * 4, user)
-            amt_str = paise_to_rupees(amount)
-            msg = (
-                f"💳 *पेमेंट लिंक*\n\n"
-                f"सेवा: *{service['name']}*\n"
-                f"रक्कम: *₹{amt_str}*\n\n"
-                f"खालील लिंकवर क्लिक करून पेमेंट करा:\n🔗 {pay_url}\n\n"
-                f"_पेमेंट झाल्यावर तुम्हाला आपोआप कन्फर्मेशन मिळेल._"
-            )
-            return txn_id, msg
-        else:
-            logger.error("PhonePe error response: %s", data)
-            return None, "❌ पेमेंट लिंक तयार करण्यात अयशस्वी. कृपया पुन्हा प्रयत्न करा."
-
-    except requests.exceptions.RequestException:
-        logger.exception("PhonePe request error")
-        return None, "❌ पेमेंट सेवेशी संपर्क साधता आला नाही."
+    msg = (
+        f"💳 *पेमेंट करा*\n\n"
+        f"सेवा: *{service['name']}*\n"
+        f"रक्कम: *₹{amount}*\n"
+        f"UPI ID: *{UPI_ID}*\n\n"
+        f"👇 खालील लिंकवर क्लिक करून PhonePe / GPay / UPI ने पेमेंट करा:\n"
+        f"{upi_link}\n\n"
+        f"✅ पेमेंट झाल्यावर *PAID* असे टाइप करा."
+    )
+    return txn_id, msg
 
 
 # ─────────────────────────────────────────────
@@ -601,10 +563,14 @@ def whatsapp_webhook():
             save_session(user, session)
             first_doc = svc["documents"][0]
             reply = (
-                f"✅ तुम्ही *{svc['name']}* सेवा निवडली आहे.\n"
-                f"फी: *₹{paise_to_rupees(svc['amount_paise'])}*\n\n"
-                f"{build_docs_list(incoming)}\n\n"
-                f"📤 आता पहिले कागदपत्र पाठवा:\n👉 *{first_doc}*"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ *{svc['name']}* — अर्ज सुरू\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"💰 सेवा शुल्क: *₹{paise_to_rupees(svc['amount_paise'])}*\n\n"
+                f"{build_docs_list(incoming)}\n"
+                f"─────────────────────\n"
+                f"📤 *पहिले कागदपत्र पाठवा:*\n"
+                f"👉 {first_doc}"
             )
             msg.body(reply)
         else:
@@ -623,7 +589,9 @@ def whatsapp_webhook():
                 # Accept image/* and application/pdf only
                 if not (media_type.startswith("image/") or media_type == "application/pdf"):
                     msg.body(
-                        f"⚠️ कृपया *{current_doc}* केवळ फोटो (JPG/PNG) किंवा PDF स्वरूपात पाठवा."
+                        f"⚠️ *चुकीचे स्वरूप!*\n\n"
+                        f"*{current_doc}* साठी केवळ\n"
+                        f"📷 फोटो (JPG/PNG) किंवा 📄 PDF पाठवा."
                     )
                     save_session(user, session)
                     return str(resp)
@@ -637,8 +605,10 @@ def whatsapp_webhook():
                 if next_doc:
                     # More docs needed
                     msg.body(
-                        f"✅ *{current_doc}* मिळाले! ({progress})\n\n"
-                        f"📤 पुढील कागदपत्र पाठवा:\n👉 *{next_doc}*"
+                        f"✅ *{current_doc}*\n"
+                        f"📊 प्रगती: {progress}\n\n"
+                        f"📤 *पुढील कागदपत्र:*\n"
+                        f"👉 {next_doc}"
                     )
                 else:
                     # All docs received → generate payment link
@@ -661,8 +631,12 @@ def whatsapp_webhook():
                         )
                     else:
                         msg.body(
-                            f"🎉 सर्व कागदपत्रे मिळाली!\n\n{pay_text}\n\n"
-                            "कृपया आमच्याशी संपर्क साधा."
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🎉 *सर्व कागदपत्रे मिळाली!*\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"📋 {pay_text}\n\n"
+                            f"📞 पेमेंटसाठी कृपया आमच्याशी\n"
+                            f"संपर्क साधा."
                         )
             else:
                 # All docs already uploaded but still in docs step (edge case)
@@ -673,8 +647,9 @@ def whatsapp_webhook():
             if required_doc:
                 progress = docs_progress_summary(session)
                 msg.body(
-                    f"📎 कृपया *{required_doc}* चा फोटो किंवा PDF पाठवा.\n"
-                    f"_(प्रगती: {progress})_"
+                    f"📎 *{required_doc}*\n"
+                    f"वरील कागदपत्राचा फोटो किंवा PDF पाठवा.\n\n"
+                    f"📊 प्रगती: {progress}"
                 )
             else:
                 msg.body("✅ सर्व कागदपत्रे मिळाली आहेत. पेमेंटची वाट पाहत आहोत.")
@@ -684,20 +659,70 @@ def whatsapp_webhook():
     # ══════════════════════════════
     elif step == "payment":
         svc_name = SERVICES.get(session.get("selected_service", ""), {}).get("name", "")
-        msg.body(
-            f"💳 तुमची *{svc_name}* साठी पेमेंट प्रक्रिया सुरू आहे.\n\n"
-            "कृपया वरील लिंकवरून पेमेंट पूर्ण करा.\n"
-            "पेमेंट झाल्यावर तुम्हाला आपोआप कन्फर्मेशन मिळेल. 🙏"
-        )
+        svc_key  = session.get("selected_service", "")
+        amount   = paise_to_rupees(SERVICES[svc_key]["amount_paise"]) if svc_key else ""
+
+        if incoming.strip().upper() == "PAID":
+            # Customer confirmed payment manually
+            session["step"] = "complete"
+            session["payment_status"] = "MANUAL_CONFIRMED"
+            sheet_update_payment(user, session, session.get("merchant_transaction_id", "MANUAL"))
+            # Notify admin
+            if twilio_client and ADMIN_NUMBER:
+                try:
+                    twilio_client.messages.create(
+                        body=(
+                            f"✅ *पेमेंट कन्फर्म*\n"
+                            f"📱 {user.split(':')[-1]}\n"
+                            f"सेवा: {svc_name}\n"
+                            f"रक्कम: ₹{amount}\n"
+                            f"_(Customer ने PAID confirm केले)_"
+                        ),
+                        from_=TWILIO_PHONE_NUMBER,
+                        to=ADMIN_NUMBER,
+                    )
+                except Exception:
+                    logger.exception("Admin payment alert error")
+            msg.body(
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ *पेमेंट कन्फर्म झाले!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"सेवा: *{svc_name}*\n"
+                f"रक्कम: *₹{amount}*\n\n"
+                f"📄 तुमचे कागदपत्र *४ कामाच्या दिवसांत* तयार होतील. 🙏\n\n"
+                f"🔄 नवीन अर्जासाठी *hi* टाइप करा."
+            )
+        else:
+            # Resend payment instructions
+            upi_link = (
+                f"upi://pay?pa={UPI_ID}"
+                f"&pn={UPI_NAME.replace(' ', '%20')}"
+                f"&am={amount}"
+                f"&cu=INR"
+                f"&tn={svc_name.replace(' ', '%20')}"
+            )
+            msg.body(
+                f"💳 *पेमेंट प्रतीक्षेत*\n"
+                f"─────────────────────\n"
+                f"सेवा: *{svc_name}*\n"
+                f"रक्कम: *₹{amount}*\n"
+                f"UPI ID: *{UPI_ID}*\n\n"
+                f"👇 PhonePe / GPay ने पेमेंट करा:\n"
+                f"{upi_link}\n\n"
+                f"✅ पेमेंट झाल्यावर *PAID* टाइप करा. 🙏"
+            )
 
     # ══════════════════════════════
     # STEP: complete
     # ══════════════════════════════
     elif step == "complete":
         msg.body(
-            "✅ तुमची प्रक्रिया आधीच पूर्ण झाली आहे.\n"
-            "तुमचे कागदपत्र *४ कामाच्या दिवसांत* तयार होतील. 🙏\n\n"
-            "नवीन अर्ज करण्यासाठी *hi* टाइप करा."
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "✅ *अर्ज पूर्ण झाला!*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📄 तुमचे कागदपत्र *४ कामाच्या दिवसांत*\n"
+            "तयार होतील. 🙏\n\n"
+            "🔄 नवीन अर्जासाठी *hi* टाइप करा."
         )
 
     save_session(user, session)
