@@ -595,6 +595,9 @@ def whatsapp_webhook():
                 "doc_order":        [],
                 "step":             "docs",
             })
+            # Log to sheet immediately when service is selected
+            row_idx = sheet_append_row(user, session)
+            session["sheet_row"] = row_idx
             save_session(user, session)
             first_doc = svc["documents"][0]
             reply = (
@@ -642,12 +645,16 @@ def whatsapp_webhook():
                     session["step"] = "payment"
                     txn_id, pay_text = create_phonepe_payment_link(user, session["selected_service"])
 
+                    # Update existing sheet row (created at service selection)
                     if txn_id:
                         session["merchant_transaction_id"] = txn_id
-                        # Save preliminary row in sheet
+                    if session.get("sheet_row"):
+                        sheet_update_payment(user, session, txn_id or "")
+                    else:
                         row_idx = sheet_append_row(user, session)
                         session["sheet_row"] = row_idx
 
+                    if txn_id:
                         msg.body(
                             f"🎉 सर्व *{progress}* कागदपत्रे मिळाली!\n\n"
                             f"{pay_text}"
