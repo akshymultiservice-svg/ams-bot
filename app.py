@@ -84,20 +84,27 @@ PHONEPE_BASE_URL = (
 PHONEPE_CALLBACK_BASE = os.getenv("PHONEPE_CALLBACK_BASE", "https://your-domain.com")
 
 # Google Sheets
-SHEET_PREFIX      = os.getenv("SHEET_PREFIX", "AMS-Applications")
-GOOGLE_CREDS_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+SHEET_PREFIX       = os.getenv("SHEET_PREFIX", "AMS-Applications")
+GOOGLE_CREDS_JSON  = os.getenv("GOOGLE_CREDS_JSON", "")
+GOOGLE_CREDS_FILE  = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 sheets_client = None
-if gspread and GOOGLE_CREDS_FILE and os.path.exists(GOOGLE_CREDS_FILE):
+if gspread:
     try:
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/spreadsheets",
         ]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_FILE, scope)
-        sheets_client = gspread.authorize(creds)
-        logger.info("Google Sheets client initialised.")
+        if GOOGLE_CREDS_JSON:
+            creds_dict = json.loads(GOOGLE_CREDS_JSON)
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            sheets_client = gspread.authorize(creds)
+            logger.info("Google Sheets client initialised from GOOGLE_CREDS_JSON.")
+        elif GOOGLE_CREDS_FILE and os.path.exists(GOOGLE_CREDS_FILE):
+            creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_FILE, scope)
+            sheets_client = gspread.authorize(creds)
+            logger.info("Google Sheets client initialised from file.")
     except Exception:
         logger.exception("Google Sheets init error")
 
