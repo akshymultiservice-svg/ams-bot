@@ -185,24 +185,18 @@ SERVICES = {
 }
 
 WELCOME_MSG = (
-    "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "🏢 *अक्षय मल्टी सर्व्हिसेस*\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "🙏 नमस्कार *{name}*,\n"
-    "आपले स्वागत आहे!\n\n"
-    "📍 ही सेवा केवळ *पारनेर तालुक्यातील*\n"
-    "नागरिकांसाठी उपलब्ध आहे.\n\n"
+    "🙏 नमस्कार {name}!\n\n"
+    "आपले *अक्षय मल्टी सर्व्हिसेस* मध्ये मनःपूर्वक स्वागत आहे.\n\n"
+    "📌 टीप: ही सुविधा केवळ *पारनेर तालुक्यातील नागरिकांसाठी* उपलब्ध आहे.\n\n"
+    "कृपया आपल्या गरजेनुसार सेवा निवडा (क्रमांक टाइप करा):\n"
 )
 
 MENU_TEXT = (
-    "📋 *सेवा यादी* — क्रमांक टाइप करा:\n"
-    "─────────────────────\n"
-    "1️⃣  डोमासाईल          ₹200\n"
-    "2️⃣  Nationality Cert.  ₹200\n"
-    "3️⃣  उत्पन्न दाखला      ₹200\n"
-    "4️⃣  नॉन क्रीमीलेअर    ₹300\n"
-    "5️⃣  मराठा जातीचा      ₹500\n"
-    "─────────────────────\n"
+    "1️⃣  डोमासाईल  –  ₹200\n"
+    "2️⃣  Nationality Certificate  –  ₹200\n"
+    "3️⃣  उत्पन्न दाखला  –  ₹200\n"
+    "4️⃣  नॉन क्रीमीलेअर दाखला  –  ₹300\n"
+    "5️⃣  मराठा जातीचा दाखला  –  ₹500\n\n"
     "0️⃣  बाहेर पडा / Exit"
 )
 
@@ -558,19 +552,19 @@ def whatsapp_webhook():
                 "step":             "docs",
             })
             # Log to sheet immediately when service is selected
-            row_idx = sheet_append_row(user, session)
-            session["sheet_row"] = row_idx
+            try:
+                row_idx = sheet_append_row(user, session)
+                session["sheet_row"] = row_idx
+            except Exception:
+                logger.exception("sheet_append_row error at service selection")
             save_session(user, session)
             first_doc = svc["documents"][0]
             reply = (
-                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"✅ *{svc['name']}* — अर्ज सुरू\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"💰 सेवा शुल्क: *₹{paise_to_rupees(svc['amount_paise'])}*\n\n"
-                f"{build_docs_list(incoming)}\n"
-                f"─────────────────────\n"
-                f"📤 *पहिले कागदपत्र पाठवा:*\n"
-                f"👉 {first_doc}"
+                f"✅ तुम्ही *{svc['name']}* सेवा निवडली आहे.\n"
+                f"फी: *₹{paise_to_rupees(svc['amount_paise'])}*\n\n"
+                f"{build_docs_list(incoming)}\n\n"
+                f"📤 आता पहिले कागदपत्र पाठवा:\n"
+                f"👉 *{first_doc}*"
             )
             msg.body(reply)
         else:
