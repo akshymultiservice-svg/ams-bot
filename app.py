@@ -893,6 +893,174 @@ def health():
     }, 200
 
 
+
+
+# ─────────────────────────────────────────────
+# Dashboard API
+# ─────────────────────────────────────────────
+@app.route("/api/stats", methods=["GET"])
+def api_stats():
+    """Return rich JSON stats from all monthly sheets for dashboard."""
+    if not sheets_client:
+        return {"error": "Sheets not configured"}, 500
+    try:
+        all_sheets = sheets_client.list_spreadsheet_files()
+        our_sheets = [s for s in all_sheets if s["name"].startswith(SHEET_PREFIX)]
+
+        all_rows = []
+        for sh_info in sorted(our_sheets, key=lambda x: x["name"]):
+            try:
+                sh = sheets_client.open_by_key(sh_info["id"])
+                ws = sh.sheet1
+                rows = ws.get_all_records()
+                all_rows.extend(rows)
+            except Exception:
+                continue
+
+        def is_paid(r):
+            s = str(r.get("Payment Status", "")).upper()
+            return "CONFIRM" in s or "PAID" in s or "SUCCESS" in s
+
+        def get_fee(r):
+            try:
+                return float(str(r.get("Service Fee (₹)", 0)).replace("₹","").replace(",","") or 0)
+            except Exception:
+                return 0
+
+        now_ist = datetime.now(IST)
+        current_month = now_ist.strftime("%Y-%m")
+        monthly_rows = [r for r in all_rows if str(r.get("Timestamp","")).startswith(current_month)]
+
+        # ── Revenue ──
+        total_revenue   = sum(get_fee(r) for r in all_rows   if is_paid(r))
+        monthly_revenue = sum(get_fee(r) for r in monthly_rows if is_paid(r))
+
+        # ── Payment counts ──
+        payment_counts = {"Paid": 0, "Pending": 0, "Failed": 0}
+        for r in all_rows:
+            s = str(r.get("Payment Status","")).upper()
+            if "CONFIRM" in s or "PAID" in s or "SUCCESS" in s:
+                payment_counts["Paid"] += 1
+            elif "FAIL" in s:
+                payment_counts["Failed"] += 1
+            else:
+                payment_counts["Pending"] += 1
+
+        # ── Conversion rate ──
+        total_apps  = len(all_rows)
+        paid_count  = payment_counts["Paid"]
+        conversion  = round(paid_count / total_apps * 100, 1) if total_apps > 0 else 0
+
+        # ── Service counts & revenue ──
+        service_counts  = {}
+        service_revenue = {}
+        for r in all_rows:
+            svc = r.get("Service","Unknown") or "Unknown"
+            service_counts[svc]  = service_counts.get(svc, 0) + 1
+            if is_paid(r):
+                service_revenue[svc] = service_revenue.get(svc, 0) + get_fee(r)
+
+        # ── Repeated customers ──
+        phone_map = {}
+        for r in all_rows:
+            ph = r.get("Phone","")
+            if ph:
+                if ph not in phone_map:
+                    phone_map[ph] = {"count": 0, "name": r.get("Customer Name",""), "services": [], "paid": 0}
+                phone_map[ph]["count"] += 1
+                svc = r.get("Service","")
+                if svc and svc not in phone_map[ph]["services"]:
+                    phone_map[ph]["services"].append(svc)
+                if is_paid(r):
+                    phone_map[ph]["paid"] += 1
+
+        repeat_customers = sorted(
+            [{"phone": ph, **info} for ph, info in phone_map.items() if info["count"] > 1],
+            key=lambda x: -x["count"]
+        )[:10]
+        unique_customers = len(phone_map)
+        repeat_count     = sum(1 for v in phone_map.values() if v["count"] > 1)
+
+        # ── Monthly trend (last 6 months) ──
+        monthly_trend = {}
+        for r in all_rows:
+            ts = str(r.get("Timestamp",""))
+            if len(ts) >= 7:
+                ym = ts[:7]
+                if ym not in monthly_trend:
+                    monthly_trend[ym] = {"applications": 0, "revenue": 0}
+                monthly_trend[ym]["applications"] += 1
+                if is_paid(r):
+                    monthly_trend[ym]["revenue"] += get_fee(r)
+
+        sorted_months = sorted(monthly_trend.keys())[-6:]
+        trend = [{"month": m, **monthly_trend[m]} for m in sorted_months]
+
+        # ── Peak hour analysis ──
+        hour_counts = {}
+        for r in all_rows:
+            ts = str(r.get("Timestamp",""))
+            try:
+                hour = int(ts[11:13])
+                hour_counts[hour] = hour_counts.get(hour, 0) + 1
+            except Exception:
+                pass
+
+        # ── Abandoned sessions (docs not complete) ──
+        abandoned = sum(1 for r in all_rows
+            if not is_paid(r) and str(r.get("Docs Status","0/0")).split("/")[0] == "0")
+        docs_incomplete = sum(1 for r in all_rows
+            if not is_paid(r) and str(r.get("Docs Status","")).count("/") > 0
+            and str(r.get("Docs Status","")).split("/")[0] != str(r.get("Docs Status","")).split("/")[-1]
+            and str(r.get("Docs Status","")).split("/")[0] != "0")
+
+        # ── Avg revenue per paid customer ──
+        avg_revenue = round(total_revenue / paid_count, 2) if paid_count > 0 else 0
+
+        # ── Recent 20 applications ──
+        recent = []
+        for r in list(reversed(all_rows))[:20]:
+            recent.append({
+                "timestamp":   r.get("Timestamp",""),
+                "phone":       r.get("Phone",""),
+                "name":        r.get("Customer Name",""),
+                "service":     r.get("Service",""),
+                "fee":         r.get("Service Fee (₹)",""),
+                "docs_status": r.get("Docs Status",""),
+                "payment":     r.get("Payment Status",""),
+            })
+
+        return {
+            "total_customers":    total_apps,
+            "unique_customers":   unique_customers,
+            "monthly_customers":  len(monthly_rows),
+            "repeat_count":       repeat_count,
+            "total_revenue":      total_revenue,
+            "monthly_revenue":    monthly_revenue,
+            "avg_revenue":        avg_revenue,
+            "conversion_rate":    conversion,
+            "payment_counts":     payment_counts,
+            "service_counts":     service_counts,
+            "service_revenue":    service_revenue,
+            "repeat_customers":   repeat_customers,
+            "monthly_trend":      trend,
+            "hour_counts":        hour_counts,
+            "abandoned":          abandoned,
+            "docs_incomplete":    docs_incomplete,
+            "recent_applications": recent,
+            "current_month":      current_month,
+        }, 200
+    except Exception as e:
+        logger.exception("Dashboard stats error")
+        return {"error": str(e)}, 500
+
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    """Serve the admin dashboard HTML page."""
+    html = open("dashboard.html").read() if os.path.exists("dashboard.html") else "<h1>Dashboard file missing</h1>"
+    return html, 200
+
 # ─────────────────────────────────────────────
 # Entry Point
 # ─────────────────────────────────────────────
