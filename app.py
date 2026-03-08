@@ -127,7 +127,8 @@ app = Flask(__name__)
 # ─────────────────────────────────────────────
 # Constants & Content
 # ─────────────────────────────────────────────
-SESSION_TIMEOUT = 20 * 60  # 20 minutes inactivity
+SESSION_TIMEOUT = 15 * 60  # 15 minutes inactivity
+SESSION_REMINDER = 12 * 60  # remind at 12 minutes
 
 SERVICES = {
     "1": {
@@ -270,6 +271,7 @@ def start_new_session(user: str, name: str) -> dict:
         "merchant_transaction_id": None,
         "payment_status": "Pending",
         "sheet_row": None,           # row number in Google Sheet for update
+        "reminder_sent": False,      # session expiry reminder sent
     }
     save_session(user, session)
     return session
@@ -286,7 +288,11 @@ def end_session(user: str):
 def build_docs_list(service_key: str) -> str:
     docs = SERVICES[service_key]["documents"]
     lines = "\n".join(f"  {i}. {d}" for i, d in enumerate(docs, 1))
-    return f"📋 *आवश्यक कागदपत्रे:*\n{lines}\n\nकृपया वरील क्रमाने एक एक कागदपत्र पाठवा."
+    return (
+        f"📋 *आवश्यक कागदपत्रे:*\n{lines}\n\n"
+        f"कृपया वरील क्रमाने एक एक कागदपत्र पाठवा.\n\n"
+        f"सर्व कागदपत्रे पाठवल्यानंतर *DONE* असे टाइप करा. ✅"
+    )
 
 
 def next_required_doc(session: dict) -> str | None:
@@ -520,6 +526,21 @@ def whatsapp_webhook():
         save_session(user, session)
         return str(resp)
 
+    # ── Session reminder: warn at 12 minutes if inactive ──
+    last_active = session.get("last_active", now_ts())
+    idle_secs   = now_ts() - last_active
+    if idle_secs >= SESSION_REMINDER and not session.get("reminder_sent"):
+        session["reminder_sent"] = True
+        save_session(user, session)
+        svc_name = SERVICES.get(session.get("selected_service", ""), {}).get("name", "")
+        msg.body(
+            f"⏰ *सूचना!*\n\n"
+            f"तुमचे सेशन ३ मिनिटांत बंद होईल.\n"
+            f"{'सेवा: *' + svc_name + '*' if svc_name else ''}\n\n"
+            f"सुरू ठेवण्यासाठी कोणताही मेसेज पाठवा. 🙏"
+        )
+        return str(resp)
+
     # ── Global: exit command ──
     if incoming in ("0", "exit", "quit", "bye", "बाहेर"):
         end_session(user)
@@ -574,79 +595,77 @@ def whatsapp_webhook():
     # STEP: docs – document upload
     # ══════════════════════════════
     elif step == "docs":
+        svc_key  = session.get("selected_service", "")
+        total_docs = len(SERVICES[svc_key]["documents"]) if svc_key else 0
+        docs_uploaded = session.get("doc_progress", {})
+        progress = docs_progress_summary(session)
+
         if num_media > 0:
-            current_doc = next_required_doc(session)
-            if current_doc:
-                media_url = request.values.get("MediaUrl0", "")
-                media_type = request.values.get("MediaContentType0", "")
+            media_url  = request.values.get("MediaUrl0", "")
+            media_type = request.values.get("MediaContentType0", "")
 
-                # Accept image/* and application/pdf only
-                if not (media_type.startswith("image/") or media_type == "application/pdf"):
-                    msg.body(
-                        f"⚠️ *चुकीचे स्वरूप!*\n\n"
-                        f"*{current_doc}* साठी केवळ\n"
-                        f"📷 फोटो (JPG/PNG) किंवा 📄 PDF पाठवा."
-                    )
-                    save_session(user, session)
-                    return str(resp)
-
-                session["doc_progress"][current_doc] = media_url
-                session["doc_order"].append(current_doc)
-
-                next_doc = next_required_doc(session)
-                progress = docs_progress_summary(session)
-
-                if next_doc:
-                    # More docs needed
-                    msg.body(
-                        f"✅ *{current_doc}*\n"
-                        f"📊 प्रगती: {progress}\n\n"
-                        f"📤 *पुढील कागदपत्र:*\n"
-                        f"👉 {next_doc}"
-                    )
-                else:
-                    # All docs received → generate payment link
-                    session["step"] = "payment"
-                    txn_id, pay_text = create_phonepe_payment_link(user, session["selected_service"])
-
-                    # Update existing sheet row (created at service selection)
-                    if txn_id:
-                        session["merchant_transaction_id"] = txn_id
-                    if session.get("sheet_row"):
-                        sheet_update_payment(user, session, txn_id or "")
-                    else:
-                        row_idx = sheet_append_row(user, session)
-                        session["sheet_row"] = row_idx
-
-                    if txn_id:
-                        msg.body(
-                            f"🎉 सर्व *{progress}* कागदपत्रे मिळाली!\n\n"
-                            f"{pay_text}"
-                        )
-                    else:
-                        msg.body(
-                            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"🎉 *सर्व कागदपत्रे मिळाली!*\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                            f"📋 {pay_text}\n\n"
-                            f"📞 पेमेंटसाठी कृपया आमच्याशी\n"
-                            f"संपर्क साधा."
-                        )
-            else:
-                # All docs already uploaded but still in docs step (edge case)
-                msg.body("✅ सर्व कागदपत्रे आधीच मिळाली आहेत. पेमेंटची प्रतीक्षा करा.")
-        else:
-            # User sent text instead of media
-            required_doc = next_required_doc(session)
-            if required_doc:
-                progress = docs_progress_summary(session)
+            # Accept image/* and application/pdf only
+            if not (media_type.startswith("image/") or media_type == "application/pdf"):
                 msg.body(
-                    f"📎 *{required_doc}*\n"
-                    f"वरील कागदपत्राचा फोटो किंवा PDF पाठवा.\n\n"
-                    f"📊 प्रगती: {progress}"
+                    f"⚠️ *चुकीचे स्वरूप!*\n\n"
+                    f"केवळ 📷 फोटो (JPG/PNG) किंवा 📄 PDF पाठवा."
                 )
+                save_session(user, session)
+                return str(resp)
+
+            # Store doc with auto-numbered key
+            doc_num = len(docs_uploaded) + 1
+            doc_key = f"doc_{doc_num}"
+            session["doc_progress"][doc_key] = media_url
+            session["doc_order"].append(doc_key)
+            docs_received = len(session["doc_progress"])
+
+            # Update sheet with current doc count
+            if session.get("sheet_row"):
+                try:
+                    _, ws = _get_or_create_monthly_sheet()
+                    col_docs_uploaded = SHEET_HEADERS.index("Documents Uploaded") + 1
+                    col_docs_status   = SHEET_HEADERS.index("Docs Status") + 1
+                    ws.update_cell(session["sheet_row"], col_docs_uploaded, str(docs_received))
+                    ws.update_cell(session["sheet_row"], col_docs_status, f"{docs_received}/{total_docs}")
+                except Exception:
+                    logger.exception("sheet doc update error")
+
+            msg.body(
+                f"✅ *कागदपत्र {docs_received} मिळाले!*\n"
+                f"📊 प्रगती: {docs_received}/{total_docs}\n\n"
+                f"पुढील कागदपत्र पाठवा किंवा सर्व झाल्यावर *DONE* टाइप करा. ✅"
+            )
+
+        elif incoming.strip().upper() == "DONE":
+            docs_received = len(docs_uploaded)
+            if docs_received == 0:
+                msg.body("⚠️ अजून एकही कागदपत्र मिळाले नाही. कृपया आधी कागदपत्रे पाठवा.")
             else:
-                msg.body("✅ सर्व कागदपत्रे मिळाली आहेत. पेमेंटची वाट पाहत आहोत.")
+                # Trigger payment
+                session["step"] = "payment"
+                txn_id, pay_text = create_phonepe_payment_link(user, svc_key)
+                if txn_id:
+                    session["merchant_transaction_id"] = txn_id
+                if session.get("sheet_row"):
+                    sheet_update_payment(user, session, txn_id or "")
+                else:
+                    row_idx = sheet_append_row(user, session)
+                    session["sheet_row"] = row_idx
+
+                msg.body(
+                    f"🎉 *{docs_received} कागदपत्रे मिळाली!*\n\n"
+                    f"{pay_text}"
+                )
+        else:
+            # Text message during docs step
+            docs_received = len(docs_uploaded)
+            msg.body(
+                f"📤 *कागदपत्रे पाठवा*\n"
+                f"📊 प्रगती: {docs_received}/{total_docs}\n\n"
+                f"फोटो किंवा PDF पाठवत राहा.\n"
+                f"सर्व झाल्यावर *DONE* टाइप करा. ✅"
+            )
 
     # ══════════════════════════════
     # STEP: payment – awaiting payment
